@@ -1,0 +1,5 @@
+__pycache__/
+.ipynb_checkpoints/
+.vscode/
+measurement_plots/
+required_docs/
