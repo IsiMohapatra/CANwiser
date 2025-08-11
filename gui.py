@@ -7,7 +7,7 @@ import re
 from tkinter import filedialog
 from pathlib import Path
 import os, shutil, tempfile
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox,simpledialog
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -23,10 +23,18 @@ from openpyxl.drawing.image import Image as OpenpyxlImage
 from PIL import Image, ImageTk, ImageOps,ImageDraw,ImageEnhance
 from io import BytesIO
 
-from back import (
-    load_signals_from_excel,calculate_time_difference_between_mf4_and_asc,process_all_signals_mdf,calculate_offset_for_synchronization,process_all_signals_mf4,
-    fetch_signals_by_frame_name,process_all_signals_of_frame,determine_signal_type,find_error_signals_for_frame,search_signals_in_dsm,
-    search_enabled_signals_in_excel,type_of_gateway,identify_multiplexor_signals,extract_basic_receiving_signal,status_table,quality_status_of_signal,plot_communication_sucessful)
+from my_tool.data_loading import (load_signals_from_excel,load_dtc_matrix_and_disable_mask)
+from my_tool.utils import calculate_time_difference_between_mf4_and_asc
+from my_tool.signal_processing.file_level_signal_processing import (process_all_signals_mdf,shift_all_signals_mf4)
+from my_tool.synchronization import synching_of_two_signals
+from my_tool.signal_processing.frame_level_signal_processing import (fetch_signals_by_frame_name , process_all_signals_of_frame ,
+                                                                     determine_signal_type,find_error_signals_for_frame,
+                                                                     filter_activated_error_signals,filter_enabled_signals_from_dsm,
+                                                                     type_of_gateway,identify_multiplexor_signals,extract_basic_receiving_signal)
+from my_tool.visualization.status_table_of_frame import status_table
+from my_tool.deep_signal_analysis.quality_checks import quality_status_of_signal
+from my_tool.visualization.plotting_signals_graphs import plot_communication_sucessful
+
 
 class TrieNode:
     def __init__(self):
@@ -539,11 +547,11 @@ class CANwiserApp(ctk.CTk):
         if selected == "CANalyser Plot/Recording":
             self.selected_type_of_recording = selected
             self.validate_and_go_to_sync()
+            print(self.selected_type_of_recording)
         if selected == "CAN monitoring/recording":
             self.selected_type_of_recording = selected
             self.validate_and_go_to_sync()
-        else:
-            messagebox.showwarning("Selection Required","Only 'CANalyser Plot/Recording' is currently supported. Please select it to proceed.")
+            print(self.selected_type_of_recording)
     
     # -----------------------------------------------------------------------------------------------------
     #----------------------------------------------------------------------------------------------------------
@@ -702,10 +710,33 @@ class CANwiserApp(ctk.CTk):
         back_btn = ctk.CTkButton(page, text="Back", width=120, fg_color="#C9A175", hover_color="#D9B382", text_color="#4E342E", command=lambda: self.show_page("measurement"))
         back_btn.place(x=40, rely=1.0, y=-50, anchor="sw")
 
-        next_btn = ctk.CTkButton(page, text="Next", width=120, fg_color="#C9A175", hover_color="#D9B382", text_color="#4E342E", command=lambda: self.show_page("sync"))
+        next_btn = ctk.CTkButton(page, text="Next", width=120, fg_color="#C9A175", hover_color="#D9B382", text_color="#4E342E", command=self.handle_next_button)
         next_btn.place(relx=1.0, rely=1.0, x=-40, y=-50, anchor="se")
 
         self.add_footer(page)
+    
+    def handle_next_button(self):
+        recording_type = self.selected_type_of_recording
+        
+        if recording_type == "CANalyser Plot/Recording":
+            # Just go to sync page as before
+            self.show_page("sync")
+
+        elif recording_type == "CAN monitoring/recording":
+            # Perform your custom steps before going to processing page
+            folder_path = self.folder_entry.get().strip()
+
+            if not folder_path.lower().endswith(".mf4") or not Path(folder_path).is_file():
+                tk.messagebox.showwarning("Invalid File", "Please select a valid .mf4 file before proceeding.")
+                return
+            print("Performing preprocessing for CAN monitoring...")
+    
+
+            # After custom logic, go to processing page
+            self.show_page("processing")
+
+        else:
+            tk.messagebox.showwarning("Recording Type Not Selected", "Please select a type of recording before continuing.")
 
     
     def full_signal_analysis(self, page):
@@ -1187,10 +1218,10 @@ class CANwiserApp(ctk.CTk):
                                         if time_shift is not None:
                                             synchronized_signals_mdf = process_all_signals_mdf(mdf, time_shift)
                                             if synchronized_signals_mdf:
-                                                offset, fig1, fig2 = calculate_offset_for_synchronization(mdf, mf4, can_matrix_path,synchronized_signals_mdf, reference_signal)
+                                                offset, fig1, fig2 = synching_of_two_signals(mdf, mf4, can_matrix_path,synchronized_signals_mdf, reference_signal)
 
                                                 if offset is not None:
-                                                    synchronized_signals_mf4 = process_all_signals_mf4(mf4,offset)
+                                                    synchronized_signals_mf4 = shift_all_signals_mf4(mf4,offset)
                                                     for frame_key in frames_list:
                                                         self.frame_sync_results[frame_key] = {
                                                             "subfolder": subfolder_key,
@@ -1547,12 +1578,14 @@ class CANwiserApp(ctk.CTk):
     
     def process_single_frame(self, frame):
         
+        
         can_matrix_path = self.saved_files.get("can_matrix", "")
         dtc_matrix_path = self.saved_files.get("dtc_matrix","")
         gateway_sheet_path = self.saved_files.get("gateway_sheet", "")
         
         frame_data = self.frame_sync_results.get(frame, {})
-
+        
+        dtc_matrix_df,disable_mask_df = load_dtc_matrix_and_disable_mask(dtc_matrix_path)
         mf4_file_path = frame_data.get("mf4_file", "")
         mdf_file_path = frame_data.get("mdf_file", "")
         self.offset = frame_data.get("offset", None)
@@ -1589,17 +1622,17 @@ class CANwiserApp(ctk.CTk):
         if not dbc_signals and not asw_signals:
             tk.messagebox.showwarning("Frame Not Found", f"The frame '{frame}' is not available in the CAN Matrix.")
             return  # Skips processing this frame without breaking the loop
-
+        
         synchronized_signals_mf4 = process_all_signals_of_frame(dbc_signals, asw_signals, self.offset,mdf_file_path, mf4_file_path,
                 can_matrix_path, self.synchronized_signals_mdf,self.synchronized_signals_mf4)
                 
         self.synchronized_signals_mf4 = synchronized_signals_mf4
-
+       
         transmitter_signals, receiver_signals,signal_type_flag = determine_signal_type(can_matrix_path, frame)
         self.transmitter_signals = transmitter_signals
         self.receiver_signals = receiver_signals
         self.signal_type_flag = signal_type_flag
-
+        
         if frame_id:
             if dtc_matrix_path:
                 matching_signals, mdf = find_error_signals_for_frame(frame, mf4_file_path, self.frame_id)
@@ -1607,12 +1640,11 @@ class CANwiserApp(ctk.CTk):
                 self.mdf = mdf
 
                 if matching_signals:
-                    activated_signals = search_signals_in_dsm(dtc_matrix_path, self.matching_signals)
+                    activated_signals = filter_activated_error_signals(dtc_matrix_df, self.matching_signals)
                     self.activated_signals = activated_signals
 
                     if activated_signals:
-                        enabled_error_signals = search_enabled_signals_in_excel(
-                        dtc_matrix_path, self.activated_signals)
+                        enabled_error_signals = filter_enabled_signals_from_dsm(disable_mask_df, self.activated_signals)
                         self.enabled_error_signals = enabled_error_signals or None
                     else:
                         self.enabled_error_signals = None
@@ -2951,26 +2983,40 @@ class CANwiserApp(ctk.CTk):
         fid_path = self.fid_entry.get().strip()
         folder_path = self.folder_entry.get().strip()
 
-        # Validate only the required file paths (CAN and folder, and valid folder flag)
-        if not all([can_path, folder_path, self.folder_valid]):
-            tk.messagebox.showwarning("Missing Input", "Please load all the required files properly (CAN Matrix and Folder).")
+        if not can_path:
+            tk.messagebox.showwarning("Missing Input", "Please load the CAN Matrix file.")
             return
 
+        # Validate based on selected type of recording
+        if not folder_path:
+            tk.messagebox.showwarning("Missing Input", "Please provide a measurement path.")
+            return
+
+        if self.selected_type_of_recording == "CANalyser Plot/Recording":
+            folder = Path(folder_path)
+            # Accept if it's a folder with at least one subfolder
+            if not folder.is_dir() or not any(f.is_dir() for f in folder.iterdir()):
+                tk.messagebox.showwarning("Invalid Folder", "Selected folder must contain subfolders.")
+                return
+            self.folder_valid = True
+
+        elif self.selected_type_of_recording == "CAN monitoring/recording":
+            # Accept if it's a single .mf4 file
+            if not folder_path.lower().endswith(".mf4") or not Path(folder_path).is_file():
+                tk.messagebox.showwarning("Invalid File", "Please select a valid .mf4 measurement file.")
+                return
+            self.folder_valid = True
+
         try:
-            # Ensure temp directory exists
             os.makedirs(self.temp_dir, exist_ok=True)
 
-            # Copy required CAN file
             can_dest = shutil.copy(can_path, os.path.join(self.temp_dir, os.path.basename(can_path)))
-
-            # Copy optional files only if provided
             dtc_dest = shutil.copy(dtc_path, os.path.join(self.temp_dir, os.path.basename(dtc_path))) if dtc_path else None
             gateway_dest = shutil.copy(gateway_path, os.path.join(self.temp_dir, os.path.basename(gateway_path))) if gateway_path else None
             fid_dest = shutil.copy(fid_path, os.path.join(self.temp_dir, os.path.basename(fid_path))) if fid_path else None
 
-            # Save paths for further use (excluding mdf, mf4, asc files)
             self.saved_files = {
-                "folder_path": folder_path,  # Save only the folder path now
+                "folder_path": folder_path,
                 "can_matrix": can_dest,
                 "dtc_matrix": dtc_dest,
                 "gateway_sheet": gateway_dest,
@@ -2981,6 +3027,7 @@ class CANwiserApp(ctk.CTk):
                 report_path = self.report_entry.get().strip()
                 if report_path:
                     self.saved_files["report_path"] = report_path
+
             self.sync_status = "success"
             self.show_page("type_of_project")
 
@@ -2989,7 +3036,6 @@ class CANwiserApp(ctk.CTk):
             self.sync_status = "error"
             
     def show_page(self, name):
-        print(name)
         if name not in self.pages:
             return  # If the page doesn't exist, do nothing
         current_page = None
@@ -3025,7 +3071,6 @@ class CANwiserApp(ctk.CTk):
         elif name == "processing":
             self.init_processing_page()
         elif name == "type_of_project":
-            print("entering")
             self.init_template_page()
       
         
@@ -3082,29 +3127,57 @@ class CANwiserApp(ctk.CTk):
             self.dtc_entry.insert(0, file)
             print(f"Selected DTC Matrix Path: {file}")  # Debugging
 
+   
+
     def select_folder(self):
-        """Handle Measurement Folder selection."""
-        path = filedialog.askdirectory()
-        if path:
-            self.folder_entry.delete(0, "end")
-            self.folder_entry.insert(0, path)
-            print(f"Selected Measurement Folder Path: {path}")  # Debugging
+        # Create a modal dialog with two buttons
+        dialog = tk.Toplevel(self)
+        dialog.title("Select Type")
+        dialog.geometry("300x120")
+        dialog.transient(self)
+        dialog.grab_set()
 
-            folder = Path(path)
-            # Check if there is at least one subfolder
-            subfolders = [f for f in folder.iterdir() if f.is_dir()]
-            self.folder_valid = len(subfolders) > 0
+        dialog.update_idletasks()
+        screen_width = dialog.winfo_screenwidth()
+        screen_height = dialog.winfo_screenheight()
+        window_width = dialog.winfo_width()
+        window_height = dialog.winfo_height()
+        x = (screen_width // 2) - (window_width // 2) + 150
+        y = (screen_height // 2) - (window_height // 2) + 80
+        dialog.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
-            # Handle error display
-            if self.folder_error_label:
-                self.folder_error_label.destroy()
-            if not self.folder_valid:
-                self.folder_error_label = ctk.CTkLabel(
-                    self.pages["measurement"],
-                    text="Selected folder should not be empty.",
-                    text_color="red"
-                )
-                self.folder_error_label.pack(pady=(5, 0))
+        label = tk.Label(dialog, text="Choose what to select:", font=("Arial", 12))
+        label.pack(pady=10)
+
+        def select_file():
+            path = filedialog.askopenfilename(title="Select File")
+            if path:
+                self.folder_entry.delete(0, "end")
+                self.folder_entry.insert(0, path)
+                self.folder_valid = True
+                if self.folder_error_label:
+                    self.folder_error_label.destroy()
+                print(f"Selected Path: {path}")
+            dialog.destroy()
+
+        def select_folder():
+            path = filedialog.askdirectory(title="Select Folder")
+            if path:
+                self.folder_entry.delete(0, "end")
+                self.folder_entry.insert(0, path)
+                self.folder_valid = True
+                if self.folder_error_label:
+                    self.folder_error_label.destroy()
+                print(f"Selected Path: {path}")
+            dialog.destroy()
+
+        btn_file = tk.Button(dialog, text="Select File", width=12, command=select_file)
+        btn_file.pack(side="left", padx=20, pady=20)
+
+        btn_folder = tk.Button(dialog, text="Select Folder", width=12, command=select_folder)
+        btn_folder.pack(side="right", padx=20, pady=20)
+
+
     
     def add_footer(self, frame):
         footer = ctk.CTkFrame(frame, fg_color="#E8DFCA", height=100)
