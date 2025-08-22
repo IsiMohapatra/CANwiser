@@ -1,19 +1,16 @@
 import customtkinter as ctk
 import tkinter as tk 
 from tkinter import ttk
-from PIL import Image
 import sys
 import re
-from tkinter import filedialog
 from pathlib import Path
 import os, shutil, tempfile
-from tkinter import filedialog, messagebox,simpledialog
+from tkinter import filedialog, messagebox
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import pandas as pd
 import matplotlib.pyplot as plt
 import threading
 from tksheet import Sheet
-from tkinter import filedialog
 from openpyxl import load_workbook
 import mdfreader
 from openpyxl.utils import quote_sheetname
